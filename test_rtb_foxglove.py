@@ -1,6 +1,5 @@
 import os
 import threading
-import asyncio
 from base64 import standard_b64encode
 from types import ModuleType
 
@@ -17,25 +16,39 @@ from foxglove_base_server.server import FoxgloveServerHandler
 from foxglove_base_server.channel import Channel
 from foxglove_base_server.msg import Msg
 
+from server_runner import ServerRunner
+
+
 def get_schema(msg_module: ModuleType, msg_bin: str):
-    with open(os.path.join(os.path.dirname(msg_module.__file__), msg_bin), "rb") as schema_bin:
+    with open(
+        os.path.join(os.path.dirname(msg_module.__file__), msg_bin), "rb"
+    ) as schema_bin:
         return standard_b64encode(schema_bin.read()).decode("ascii")
 
-async def start_server_async(server_handler):
-    await server_handler.start_server()
 
-server_handler = FoxgloveServerHandler()
-msg = Msg(FloatMsg_pb2.FloatMsg(data=10.0), Channel("manipulability", "protobuf", "FloatMsg", get_schema(FloatMsg_pb2, "FloatMsg.bin")))
-joints = Msg(FloatsMsg_pb2.FloatsMsg(), Channel("joints", "protobuf", "FloatsMsg", get_schema(FloatsMsg_pb2, "FloatsMsg.bin")))
-joints.msg.data.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+server_runner = ServerRunner(FoxgloveServerHandler())
 
-server_handler.add_msg(msg)
-server_handler.add_msg(joints)
+manipulability_msg = Msg(
+    FloatMsg_pb2.FloatMsg(data=10.0),
+    Channel(
+        "manipulability",
+        "protobuf",
+        "FloatMsg",
+        get_schema(FloatMsg_pb2, "FloatMsg.bin"),
+    ),
+)
+joints_manipulability = Msg(
+    FloatsMsg_pb2.FloatsMsg(),
+    Channel(
+        "joints_value", "protobuf", "FloatsMsg", get_schema(FloatsMsg_pb2, "FloatsMsg.bin")
+    ),
+)
+joints_manipulability.msg.data.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 
-async def run_server():
-    await start_server_async(server_handler)
+server_runner.add_msg(manipulability_msg)
+server_runner.add_msg(joints_manipulability)
 
-thread = threading.Thread(target=asyncio.run, args=(run_server(),))
+thread = threading.Thread(target=server_runner.run_asyncio)
 thread.start()
 
 env = swift.Swift()
@@ -54,8 +67,32 @@ dt = 0.05
 while not arrived:
     v, arrived = rtb.p_servo(panda.fkine(panda.q), Tep, 0.1)
     panda.qd = np.linalg.pinv(panda.jacobe(panda.q)) @ v
-    joints = Msg(FloatsMsg_pb2.FloatsMsg(), Channel("joints", "protobuf", "FloatsMsg", get_schema(FloatsMsg_pb2, "FloatsMsg.bin")))
-    joints.msg.data.extend([panda.q[0], panda.q[1], panda.q[2], panda.q[3], panda.q[4], panda.q[5]])
-    server_handler.update_msg(joints)
-    server_handler.update_msg(Msg(FloatMsg_pb2.FloatMsg(data=panda.manipulability(panda.q)), Channel("manipulability", "protobuf", "FloatMsg", get_schema(FloatMsg_pb2, "FloatMsg.bin"))))
+    joints_manipulability = Msg(
+        FloatsMsg_pb2.FloatsMsg(),
+        Channel(
+            "joints_value",
+            "protobuf",
+            "FloatsMsg",
+            get_schema(FloatsMsg_pb2, "FloatsMsg.bin"),
+        ),
+    )
+    joints_manipulability.msg.data.extend(
+        [panda.q[0], panda.q[1], panda.q[2], panda.q[3], panda.q[4], panda.q[5]]
+    )
+    server_runner.update_msg(joints_manipulability)
+    server_runner.update_msg(
+        Msg(
+            FloatMsg_pb2.FloatMsg(data=panda.manipulability(panda.q)),
+            Channel(
+                "manipulability",
+                "protobuf",
+                "FloatMsg",
+                get_schema(FloatMsg_pb2, "FloatMsg.bin"),
+            ),
+        )
+    )
     env.step(dt)
+
+# close thread
+server_runner.stop()
+thread.join()
